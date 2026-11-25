@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Love me? — мозаика</title>
+
+<style>
+  /* ============ ОБЩИЙ ВИД СТРАНИЦЫ ============ */
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #07060d;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    color: #e9e4ff;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* Фон: глубокий тёмный градиент с мягким свечением в центре */
+  body {
+    background: radial-gradient(ellipse at 50% 45%, #1d1033 0%, #0c0818 55%, #05040a 100%);
+  }
+
+  #stage {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  /* Виньетка — затемнение по краям */
+  .vignette {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.55) 100%);
+  }
+
+  /* ============ ПАНЕЛЬ УПРАВЛЕНИЯ ============ */
+  #ui {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-radius: 16px;
+    background: rgba(20, 14, 38, .55);
+    border: 1px solid rgba(255, 255, 255, .10);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 10px 40px rgba(0,0,0,.45);
+    max-width: calc(100vw - 24px);
+    transition: opacity .4s ease;
+  }
+  #ui.hidden { opacity: 0; pointer-events: none; }
+
+  #ui button {
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,.16);
+    background: rgba(255,255,255,.07);
+    color: #f3eeff;
+    font: 600 13px/1 inherit;
+    font-family: inherit;
+    padding: 9px 14px;
+    border-radius: 10px;
+    transition: background .2s, transform .1s;
+    white-space: nowrap;
+  }
+  #ui button:hover { background: rgba(255,120,190,.22); }
+  #ui button:active { transform: scale(.96); }
+
+  #ui input[type=range] {
+    width: min(38vw, 340px);
+    accent-color: #ff6fb1;
+    cursor: pointer;
+  }
+  #ui .label {
+    font-size: 12px;
+    opacity: .7;
+    min-width: 38px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #hint {
+    position: fixed;
+    top: 16px;
+    left: 18px;
+    font-size: 12px;
+    letter-spacing: .02em;
+    opacity: .5;
+    line-height: 1.6;
+    pointer-events: none;
+    transition: opacity .4s ease;
+  }
+  #hint.hidden { opacity: 0; }
+  #hint b { font-weight: 600; color: #ffb3d6; }
+
+  @media (max-width: 560px) {
+    #hint { display: none; }
+    #ui { gap: 8px; padding: 8px 10px; bottom: 12px; }
+    #ui button { padding: 8px 10px; }
+  }
+</style>
+</head>
+
+<body>
+<canvas id="stage"></canvas>
+<div class="vignette"></div>
+
+<div id="hint">
+  <b>R</b> — повтор &nbsp;·&nbsp; <b>Пробел</b> — пауза<br>
+  <b>←/→</b> — шаг &nbsp;·&nbsp; <b>колесо мыши</b> — зум &nbsp;·&nbsp; <b>H</b> — скрыть панель<br>
+  <b>двигайте мышкой</b> — наклон сцены в 3D
+</div>
+
+<div id="ui">
+  <button id="btnReplay" title="Повторить (R)">⟲ Replay</button>
+  <button id="btnPlay" title="Пауза / продолжить (Пробел)">❚❚ Пауза</button>
+  <input id="slider" type="range" min="0" max="1000" value="0" title="Фаза анимации: ближе ←→ дальше">
+  <span class="label" id="label">0%</span>
+</div>
+
+<script>
+/* ======================================================================
+   НАСТРОЙКИ — ЗДЕСЬ МОЖНО БЫСТРО ВСЁ ПОМЕНЯТЬ
+   ====================================================================== */
+const CONFIG = {
+  // ---------- ТЕКСТЫ ----------
+  smallText: "Love me?",                                        // маленькая повторяющаяся фраза
+  date: "December 3",                                           // дата (подставится вместо {date})
+  bigTextTemplate: "Can you give me a sweatshirt for {date}?",  // большая фраза (силуэт)
+
+  // ---------- СЦЕНАРИЙ АНИМАЦИИ ----------
+  // 1) камера вплотную к ОДНОЙ фразе «Love me?»
+  // 2) камера плавно отъезжает, вокруг по кругу появляются другие такие же фразы
+  // 3) в конце они все загораются и складываются в большую надпись
+  duration: 20,        // сколько секунд длится весь «отъезд камеры»
+  loop: false,         // true — после конца автоматически начинать заново
+  startCellFill: 0.62, // какую долю ширины экрана занимает единственная фраза в начале (0.3..0.9)
+  startHold: 0.07,     // доля времени в начале, когда камера почти стоит на одной фразе
+  endHold: 0.08,       // доля времени в конце, когда камера уже стоит (0..1)
+  revealFrom: 0.02,    // когда (0..1 по ходу отъезда) начинают появляться другие фразы
+  revealTo: 0.90,      // когда появились вообще все фразы силуэта
+  glowFrom: 0.55,      // когда фразы начинают переходить из спокойного цвета в светящийся
+  glowTo: 0.97,        // когда переход полностью закончен
+
+  // ---------- МОЗАИКА ----------
+  cellW: 28,           // ширина одной ячейки «Love me?» (в условных единицах мира)
+  cellH: 7,            // высота ячейки. Меньше ячейки = чётче силуэт, но больше нагрузка
+  worldWidth: 2400,    // ширина «мира» (обычно трогать не нужно)
+  maskScale: 0.5,      // разрешение маски текста
+  coverThreshold: 0.45,// какую долю ячейки должна закрывать буква, чтобы ячейка вошла в силуэт (0..1)
+  textWidthFraction: 0.9,   // какую долю ширины мира занимает большая надпись
+  textHeightFraction: 0.8,  // какую долю высоты мира занимает большая надпись
+  maxFontSize: 420,    // максимальный размер шрифта большой надписи
+  maskFontWeight: 800, // толщина букв силуэта (толще = читается лучше)
+  fontFamily: 'Inter, "Segoe UI", system-ui, Arial, sans-serif',
+
+  // ---------- ЖИВОЕ ДВИЖЕНИЕ (очень мягкое) ----------
+  swayAmount: 0.6,     // сила покачивания ячеек (0 = нет движения)
+  maxSwayPx: 2,        // потолок покачивания в пикселях экрана (чтобы вблизи не «дёргалось»)
+  flickerAmount: 0.08, // сила мерцания (0..1)
+
+  // ---------- 3D-НАКЛОН ОТ МЫШИ ----------
+  tiltDeg: 12,         // максимальный угол наклона сцены в градусах
+  panAmount: 40,       // насколько пикселей сцена «едет» следом за курсором
+  perspective: 1.5,    // сила перспективы (меньше = сильнее «объём», больше = плоскее)
+  tiltSmoothing: 3.0,  // плавность: меньше = ленивее и мягче, больше = быстрее реагирует
+  scrubSmoothing: 6.0, // плавность колеса мыши и ползунка
+
+  // ---------- ЦВЕТА ----------
+  dimColor: "#b9acf0",     // спокойный цвет фраз (в начале)
+  brightColor: "#ffe3f0",  // яркий цвет фраз (в конце)
+  glowColor: "#ff4f9a",    // цвет свечения
+
+  // ---------- ПРОЧЕЕ ----------
+  maxDpr: 2.5          // ограничение плотности пикселей (для экономии производительности на Retina)
+};
+
+/* ======================================================================
+   СЛУЖЕБНЫЙ КОД. НОВИЧКУ ОБЫЧНО НИЖЕ МОЖНО НЕ ЛЕЗТЬ :)
+   ====================================================================== */
+
+// ---------- Вспомогательные функции ----------
+const clamp  = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp   = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, v) => { const t = clamp((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+// «Смутстеп»: ещё мягче, чем обычное ускорение/замедление — старт и финиш без рывка
+const smoother = t => { t = clamp(t, 0, 1); return t * t * t * (t * (6 * t - 15) + 10); };
+
+// ---------- Элементы страницы ----------
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+const ui = document.getElementById('ui');
+const hint = document.getElementById('hint');
+const btnReplay = document.getElementById('btnReplay');
+const btnPlay = document.getElementById('btnPlay');
+const slider = document.getElementById('slider');
+const label = document.getElementById('label');
+
+// ---------- Состояние ----------
+const state = {
+  phase: 0,          // главный прогресс анимации 0..1
+  scrubTarget: null, // если не null — phase плавно «догоняет» это значение (колесо, ползунок)
+  playing: true,
+  introT: 0,         // секунды с момента старта (для плавного появления в самом начале)
+  dpr: 1,
+  W: 0, H: 0,
+  worldW: 0, worldH: 0,
+  grid: null
+};
+
+// Мышь: tx/ty — куда указывает курсор (-1..1); mx/my — первое сглаживание; x/y — второе (итоговое)
+// Два сглаживания подряд дают очень мягкий, «шелковый» отклик без рывков.
+const tilt = { tx: 0, ty: 0, mx: 0, my: 0, x: 0, y: 0 };
+
+/* ----------------------------------------------------------------------
+   1. СПРАЙТЫ: рисуем одну фразу «Love me?» в картинку один раз,
+      а потом копируем её тысячи раз — это намного быстрее fillText.
+   ---------------------------------------------------------------------- */
+const spriteCache = new Map();
+const SPRITE_LEVELS = [32, 64, 128, 256, 512, 1024, 2048]; // варианты ширины спрайта (чёткость при разном зуме)
+
+function makeSprite(kind, wpx) {
+  const hpx = Math.max(4, Math.round(wpx * CONFIG.cellH / CONFIG.cellW));
+  const pad = kind === 'bright' ? Math.round(hpx * 0.6) : 0; // поля под свечение
+  const c = document.createElement('canvas');
+  c.width = wpx + pad * 2;
+  c.height = hpx + pad * 2;
+  const g = c.getContext('2d');
+
+  // Подбираем размер шрифта: ~90% ширины ячейки и чтобы влезало по высоте
+  const weight = 600;
+  g.font = `${weight} 100px ${CONFIG.fontFamily}`;
+  const w100 = g.measureText(CONFIG.smallText).width || 1;
+  const size = Math.min(wpx * 0.92 / w100 * 100, hpx * 0.86);
+  g.font = `${weight} ${size}px ${CONFIG.fontFamily}`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+
+  const cx = c.width / 2, cy = c.height / 2 + size * 0.04;
+  if (kind === 'bright') {
+    g.shadowColor = CONFIG.glowColor;
+    g.shadowBlur = hpx * 0.45;
+    g.fillStyle = CONFIG.glowColor;
+    g.fillText(CONFIG.smallText, cx, cy);   // свечение
+    g.shadowBlur = hpx * 0.12;
+    g.fillStyle = CONFIG.brightColor;
+    g.fillText(CONFIG.smallText, cx, cy);   // сам яркий текст (остаётся чётким)
+  } else {
+    g.fillStyle = CONFIG.dimColor;
+    g.fillText(CONFIG.smallText, cx, cy);
+  }
+  return { c, pad, wpx, hpx };
+}
+
+function getSprite(kind, targetDevicePx) {
+  let level = SPRITE_LEVELS[SPRITE_LEVELS.length - 1];
+  for (const l of SPRITE_LEVELS) { if (l >= targetDevicePx * 0.9) { level = l; break; } }
+  const key = kind + level;
+  let s = spriteCache.get(key);
+  if (!s) { s = makeSprite(kind, level); spriteCache.set(key, s); }
+  return s;
+}
+
+/* ----------------------------------------------------------------------
+   2. ПОСТРОЕНИЕ МОЗАИКИ: большая фраза рисуется в скрытый холст (маску),
+      и в сетке остаются ТОЛЬКО ячейки, попавшие внутрь букв.
+   ---------------------------------------------------------------------- */
+function wrapWords(g, text, maxW) {
+  const words = text.split(' ');
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const test = cur ? cur + ' ' + w : w;
+    if (g.measureText(test).width <= maxW || !cur) cur = test;
+    else { lines.push(cur); cur = w; }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function layoutText(g, text, worldW, worldH) {
+  const maxW = worldW * CONFIG.textWidthFraction;
+  const maxH = worldH * CONFIG.textHeightFraction;
+  for (let F = CONFIG.maxFontSize; F >= 24; F -= 4) {
+    g.font = `${CONFIG.maskFontWeight} ${F}px ${CONFIG.fontFamily}`;
+    const lines = wrapWords(g, text, maxW);
+    const tooWide = lines.some(l => g.measureText(l).width > maxW);
+    const lh = F * 1.14;
+    if (!tooWide && lines.length * lh <= maxH) return { F, lines, lh };
+  }
+  g.font = `${CONFIG.maskFontWeight} 24px ${CONFIG.fontFamily}`;
+  return { F: 24, lines: wrapWords(g, text, maxW), lh: 28 };
+}
+
+function build() {
+  // --- размеры экрана и HiDPI ---
+  state.W = window.innerWidth;
+  state.H = window.innerHeight;
+  state.dpr = Math.min(window.devicePixelRatio || 1, CONFIG.maxDpr);
+  canvas.width = Math.round(state.W * state.dpr);
+  canvas.height = Math.round(state.H * state.dpr);
+
+  // --- «мир» повторяет пропорции окна ---
+  const aspect = clamp(state.H / state.W, 0.5, 1.8);
+  state.worldW = CONFIG.worldWidth;
+  state.worldH = Math.round(CONFIG.worldWidth * aspect);
+  const { worldW, worldH } = state;
+
+  // --- маска ---
+  const ms = CONFIG.maskScale;
+  const mc = document.createElement('canvas');
+  mc.width = Math.ceil(worldW * ms);
+  mc.height = Math.ceil(worldH * ms);
+  const mg = mc.getContext('2d', { willReadFrequently: true });
+  mg.scale(ms, ms);
+
+  const bigText = CONFIG.bigTextTemplate.replace('{date}', CONFIG.date);
+  const lay = layoutText(mg, bigText, worldW, worldH);
+  mg.fillStyle = '#fff';
+  mg.textAlign = 'center';
+  mg.textBaseline = 'middle';
+  lay.lines.forEach((line, i) => {
+    const y = worldH / 2 + (i - (lay.lines.length - 1) / 2) * lay.lh;
+    mg.fillText(line, worldW / 2, y);
+  });
+  const mask = mg.getImageData(0, 0, mc.width, mc.height).data;
+  const mw = mc.width, mh = mc.height;
+
+  // --- сетка ячеек со сдвигом чётных рядов («кирпичная кладка») ---
+  const { cellW, cellH } = CONFIG;
+  const cols = Math.ceil(worldW / cellW) + 1;
+  const rows = Math.ceil(worldH / cellH);
+  const xs = [], ys = [], phase = [], rnd = [];
+  const offs = [-0.3, 0, 0.3]; // точки внутри ячейки для проверки попадания в букву (3×3)
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const cx = c * cellW + (r % 2 ? cellW / 2 : 0);
+      const cy = r * cellH + cellH / 2;
+
+      let sum = 0;
+      for (const oy of offs) for (const ox of offs) {
+        const px = Math.round((cx + ox * cellW) * ms);
+        const py = Math.round((cy + oy * cellH) * ms);
+        if (px >= 0 && py >= 0 && px < mw && py < mh) sum += mask[(py * mw + px) * 4 + 3];
+      }
+      // сохраняем ТОЛЬКО ячейки внутри букв — фона нет
+      if (sum / 255 / 9 >= CONFIG.coverThreshold) {
+        xs.push(cx); ys.push(cy);
+        phase.push(Math.random() * Math.PI * 2);
+        rnd.push(Math.random());
+      }
+    }
+  }
+
+  // --- стартовая ячейка: та, что ближе всего к центру мира (на неё сначала смотрит камера) ---
+  let start = 0, best = Infinity;
+  for (let i = 0; i < xs.length; i++) {
+    const d = Math.hypot(xs[i] - worldW / 2, ys[i] - worldH / 2);
+    if (d < best) { best = d; start = i; }
+  }
+  const startX = xs[start], startY = ys[start];
+
+  // --- расстояние каждой ячейки от стартовой (с лёгким случайным «дрожанием», чтобы фронт появления был живым) ---
+  const dist = new Float32Array(xs.length);
+  let maxD = 1;
+  for (let i = 0; i < xs.length; i++) {
+    const d = Math.hypot(xs[i] - startX, ys[i] - startY);
+    dist[i] = i === start ? 0 : d * (0.85 + 0.3 * rnd[i]);
+    if (dist[i] > maxD) maxD = dist[i];
+  }
+
+  state.grid = {
+    n: xs.length,
+    x: Float32Array.from(xs),
+    y: Float32Array.from(ys),
+    phase: Float32Array.from(phase),
+    rnd: Float32Array.from(rnd),
+    dist, maxD: maxD * 1.05,
+    startX, startY
+  };
+  spriteCache.clear();
+}
+
+/* ----------------------------------------------------------------------
+   3. ОТРИСОВКА КАДРА (с 3D-наклоном)
+   ---------------------------------------------------------------------- */
+function render(time) {
+  const g = state.grid;
+  if (!g) return;
+  const { W, H, dpr, worldW, worldH } = state;
+  const { cellW, cellH } = CONFIG;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  // --- прогресс отъезда камеры (очень мягкий разгон и торможение) ---
+  const span = Math.max(0.01, 1 - CONFIG.startHold - CONFIG.endHold);
+  const zp = smoother((state.phase - CONFIG.startHold) / span);
+
+  // --- камера: зум по логарифму (отдаление выглядит равномерным) ---
+  const fitZoom = Math.min(W / worldW, H / worldH) * 0.97;          // весь мир в экране
+  const startZoom = Math.max(fitZoom, CONFIG.startCellFill * W / cellW); // одна фраза на экране
+  const z = fitZoom * Math.pow(startZoom / fitZoom, 1 - zp);
+  const camX = lerp(g.startX, worldW / 2, zp);
+  const camY = lerp(g.startY, worldH / 2, zp);
+
+  // --- сколько ячеек уже «появилось»: радиус появления растёт по экспоненте от 3 ед. до размера всей надписи ---
+  const e = smooth(CONFIG.revealFrom, CONFIG.revealTo, zp);
+  const R0 = 3;
+  const Rw = R0 * Math.pow(g.maxD / R0, e);
+
+  // --- свечение: от спокойного цвета к яркому ---
+  const glow = smooth(CONFIG.glowFrom, CONFIG.glowTo, zp);
+
+  // --- 3D-наклон: углы из СГЛАЖЕННОГО положения мыши ---
+  const maxTilt = CONFIG.tiltDeg * Math.PI / 180;
+  const rotY = -tilt.x * maxTilt;   // курсор вправо — правый край уходит вдаль
+  const rotX =  tilt.y * maxTilt;   // курсор вниз — нижний край уходит вдаль
+  const cY = Math.cos(rotY), sY = Math.sin(rotY);
+  const cX = Math.cos(rotX), sX = Math.sin(rotX);
+  const f = Math.max(W, H) * CONFIG.perspective;     // «расстояние до камеры» (для перспективы)
+  const halfW = W / 2 + tilt.x * CONFIG.panAmount;   // лёгкий сдвиг сцены вслед за курсором
+  const halfH = H / 2 + tilt.y * CONFIG.panAmount;
+
+  // размер ячейки на экране (без перспективы)
+  const w = cellW * z, h = cellH * z;
+  const dimSp = getSprite('dim', w * dpr);
+  const brightSp = getSprite('bright', w * dpr);
+
+  // покачивание: в пикселях экрана, с потолком — вблизи не дёргается; к концу затихает
+  const sway = CONFIG.swayAmount * (1 - 0.8 * glow);
+  const swayX = Math.min(cellW * 0.05 * z, CONFIG.maxSwayPx) * sway;
+  const swayY = Math.min(cellH * 0.20 * z, CONFIG.maxSwayPx) * sway;
+  const flk = CONFIG.flickerAmount * (1 - 0.5 * glow);
+  const introFade = smooth(0, 1, state.introT * 0.8); // плавное проявление самой первой фразы
+
+  for (let i = 0; i < g.n; i++) {
+    // мягкая граница появления: ячейка проявляется, когда радиус Rw «доходит» до неё
+    const appear = clamp((Rw - g.dist[i]) / (0.25 * Rw + 2), 0, 1);
+    if (appear <= 0.01) continue;
+
+    const ph = g.phase[i], rn = g.rnd[i];
+
+    // позиция ячейки относительно камеры (пиксели экрана) + мягкое покачивание
+    const X = (g.x[i] - camX) * z + Math.sin(time * 0.7 + ph) * swayX;
+    const Y = (g.y[i] - camY) * z + Math.cos(time * 0.9 + ph) * swayY;
+
+    // поворот вокруг оси Y (влево-вправо), затем вокруг оси X (вверх-вниз)
+    const z1 = -X * sY;
+    const x1 = X * cY;
+    const y2 = Y * cX - z1 * sX;
+    const z2 = Y * sX + z1 * cX;
+
+    // перспектива: что дальше — то меньше
+    const s = f / (f + z2);
+    const sx = halfW + x1 * s;
+    const sy = halfH + y2 * s;
+
+    // размер на экране: перспектива + «сплющивание» от наклона
+    const dw = w * s * cY, dh = h * s * cX;
+    if (sx < -dw * 2 || sx > W + dw * 2 || sy < -dh * 2 || sy > H + dh * 2) continue;
+
+    // мерцание (медленное)
+    const flick = 1 - flk * (0.5 + 0.5 * Math.sin(time * 1.2 + ph * 3.0));
+    const alpha = appear * flick * introFade;
+
+    // локальный прогресс свечения: у каждой ячейки чуть свой (красивое «зажигание»)
+    const local = clamp(glow * 1.6 - rn * 0.6, 0, 1);
+
+    // спокойный слой
+    const aDim = (1 - local) * alpha;
+    if (aDim > 0.01) {
+      const kx = dw / dimSp.wpx, ky = dh / dimSp.hpx;
+      ctx.globalAlpha = aDim;
+      ctx.drawImage(dimSp.c, sx - dimSp.c.width * kx / 2, sy - dimSp.c.height * ky / 2,
+                    dimSp.c.width * kx, dimSp.c.height * ky);
+    }
+    // яркий слой со свечением
+    const aBr = local * alpha;
+    if (aBr > 0.01) {
+      const kx = dw / brightSp.wpx, ky = dh / brightSp.hpx;
+      ctx.globalAlpha = aBr;
+      ctx.drawImage(brightSp.c, sx - brightSp.c.width * kx / 2, sy - brightSp.c.height * ky / 2,
+                    brightSp.c.width * kx, brightSp.c.height * ky);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ----------------------------------------------------------------------
+   4. ГЛАВНЫЙ ЦИКЛ (60 fps через requestAnimationFrame)
+   ---------------------------------------------------------------------- */
+let lastNow = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.05, (now - lastNow) / 1000);
+  lastNow = now;
+
+  state.introT += dt;
+
+  // Сглаживание мыши: два lerp подряд, не зависящих от частоты кадров
+  const k = 1 - Math.exp(-dt * CONFIG.tiltSmoothing);
+  tilt.mx += (tilt.tx - tilt.mx) * k;
+  tilt.my += (tilt.ty - tilt.my) * k;
+  tilt.x  += (tilt.mx - tilt.x)  * k;
+  tilt.y  += (tilt.my - tilt.y)  * k;
+
+  if (state.scrubTarget !== null) {
+    // Колесо / ползунок: фаза плавно догоняет цель (никаких скачков)
+    const ks = 1 - Math.exp(-dt * CONFIG.scrubSmoothing);
+    state.phase += (state.scrubTarget - state.phase) * ks;
+    if (Math.abs(state.scrubTarget - state.phase) < 0.0003) {
+      state.phase = state.scrubTarget;
+      state.scrubTarget = null;
+    }
+  } else if (state.playing) {
+    state.phase += dt / CONFIG.duration;
+    if (state.phase >= 1) {
+      state.phase = 1;
+      if (CONFIG.loop) replay();
+      else { state.playing = false; updatePlayButton(); }
+    }
+  }
+  syncSlider();
+  render(now / 1000);
+  requestAnimationFrame(frame);
+}
+
+/* ----------------------------------------------------------------------
+   5. УПРАВЛЕНИЕ
+   ---------------------------------------------------------------------- */
+function replay() {
+  state.phase = 0;
+  state.scrubTarget = null;
+  state.introT = 0;
+  state.playing = true;
+  updatePlayButton();
+}
+
+function togglePlay() {
+  state.scrubTarget = null;
+  if (state.phase >= 1 && !state.playing) { replay(); return; }
+  state.playing = !state.playing;
+  updatePlayButton();
+}
+
+function updatePlayButton() {
+  btnPlay.textContent = state.playing ? '❚❚ Пауза' : '▶ Играть';
+}
+
+function syncSlider() {
+  slider.value = Math.round(state.phase * 1000);
+  label.textContent = Math.round(state.phase * 100) + '%';
+}
+
+// Задать цель для фазы (камера плавно доедет сама) и поставить на паузу
+function scrubTo(p) {
+  state.scrubTarget = clamp(p, 0, 1);
+  state.playing = false;
+  updatePlayButton();
+}
+
+btnReplay.addEventListener('click', replay);
+btnPlay.addEventListener('click', togglePlay);
+slider.addEventListener('input', () => scrubTo(slider.value / 1000));
+
+window.addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  const base = state.scrubTarget !== null ? state.scrubTarget : state.phase;
+  if (k === 'r' || k === 'к') replay();
+  else if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+  else if (e.key === 'ArrowRight') scrubTo(base + 0.03);
+  else if (e.key === 'ArrowLeft')  scrubTo(base - 0.03);
+  else if (k === 'h' || k === 'р') { ui.classList.toggle('hidden'); hint.classList.toggle('hidden'); }
+});
+
+// Колесо мыши: вниз — отдаляем, вверх — приближаем (плавно)
+window.addEventListener('wheel', e => {
+  const base = state.scrubTarget !== null ? state.scrubTarget : state.phase;
+  scrubTo(base + clamp(e.deltaY, -120, 120) * 0.0004);
+}, { passive: true });
+
+// Мышь / палец: запоминаем, куда указывает курсор (-1..1). Сглаживание — в frame()
+window.addEventListener('pointermove', e => {
+  tilt.tx = clamp((e.clientX / state.W - 0.5) * 2, -1, 1);
+  tilt.ty = clamp((e.clientY / state.H - 0.5) * 2, -1, 1);
+});
+// Курсор ушёл с окна или палец поднят — сцена плавно возвращается в центр
+document.addEventListener('mouseleave', () => { tilt.tx = 0; tilt.ty = 0; });
+window.addEventListener('pointerup', e => { if (e.pointerType === 'touch') { tilt.tx = 0; tilt.ty = 0; } });
+
+// Пересборка при изменении размера окна
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(build, 150);
+});
+
+/* ---------- СТАРТ ---------- */
+build();
+updatePlayButton();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
